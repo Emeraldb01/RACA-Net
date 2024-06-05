@@ -1,7 +1,13 @@
 import torch
 import torch.nn as nn
 
-from Models.layers.modules import conv_block, UpCat, UpCatconv, UnetDsv3, UnetGridGatingSignal3
+from Models.layers.modules import (
+    conv_block,
+    UpCat,
+    UpCatconv,
+    UnetDsv3,
+    UnetGridGatingSignal3,
+)
 from Models.layers.grid_attention_layer import GridAttentionBlock2D, MultiAttentionBlock
 from Models.layers.channel_attention_layer import SE_Conv_Block
 from Models.layers.scale_attention_layer import scale_atten_convblock
@@ -9,8 +15,17 @@ from Models.layers.nonlocal_layer import NONLocalBlock2D
 
 
 class Comprehensive_Atten_Unet(nn.Module):
-    def __init__(self, args, in_ch=3, n_classes=2, feature_scale=4, is_deconv=True, is_batchnorm=True,
-                 nonlocal_mode='concatenation', attention_dsample=(1, 1)):
+    def __init__(
+        self,
+        args,
+        in_ch=3,
+        n_classes=2,
+        feature_scale=4,
+        is_deconv=True,
+        is_batchnorm=True,
+        nonlocal_mode="concatenation",
+        attention_dsample=(1, 1),
+    ):
         super(Comprehensive_Atten_Unet, self).__init__()
         self.args = args
         self.is_deconv = is_deconv
@@ -41,11 +56,23 @@ class Comprehensive_Atten_Unet(nn.Module):
         # attention blocks
         # self.attentionblock1 = GridAttentionBlock2D(in_channels=filters[0], gating_channels=filters[1],
         #                                             inter_channels=filters[0])
-        self.attentionblock2 = MultiAttentionBlock(in_size=filters[1], gate_size=filters[2], inter_size=filters[1],
-                                                   nonlocal_mode=nonlocal_mode, sub_sample_factor=attention_dsample)
-        self.attentionblock3 = MultiAttentionBlock(in_size=filters[2], gate_size=filters[3], inter_size=filters[2],
-                                                   nonlocal_mode=nonlocal_mode, sub_sample_factor=attention_dsample)
-        self.nonlocal4_2 = NONLocalBlock2D(in_channels=filters[4], inter_channels=filters[4] // 4)
+        self.attentionblock2 = MultiAttentionBlock(
+            in_size=filters[1],
+            gate_size=filters[2],
+            inter_size=filters[1],
+            nonlocal_mode=nonlocal_mode,
+            sub_sample_factor=attention_dsample,
+        )
+        self.attentionblock3 = MultiAttentionBlock(
+            in_size=filters[2],
+            gate_size=filters[3],
+            inter_size=filters[2],
+            nonlocal_mode=nonlocal_mode,
+            sub_sample_factor=attention_dsample,
+        )
+        self.nonlocal4_2 = NONLocalBlock2D(
+            in_channels=filters[4], inter_channels=filters[4] // 4
+        )
 
         # upsampling
         self.up_concat4 = UpCat(filters[4], filters[3], self.is_deconv)
@@ -65,7 +92,11 @@ class Comprehensive_Atten_Unet(nn.Module):
 
         self.scale_att = scale_atten_convblock(in_size=16, out_size=4)
         # final conv (without any concat)
-        self.final = nn.Sequential(nn.Conv2d(4, n_classes, kernel_size=1), nn.Softmax2d())
+        self.final = nn.Sequential(
+            nn.Conv2d(4, n_classes, kernel_size=1), nn.Softmax2d()
+        )
+
+        self.reshape_conv_256_to_128 = nn.Conv2d(256, 128, kernel_size=1)
 
     def forward(self, inputs):
         # Feature Extraction
@@ -87,10 +118,21 @@ class Comprehensive_Atten_Unet(nn.Module):
         # Attention Mechanism
         # Upscaling Part (Decoder)
         up4 = self.up_concat4(conv4, center)
+
         g_conv4 = self.nonlocal4_2(up4)
 
+        # Reshape up3_con from 128 to 64 channels
+        g_conv4_reshaped = self.reshape_conv_256_to_128(g_conv4)
+
         up4, att_weight4 = self.up4(g_conv4)
-        g_conv3, att3 = self.attentionblock3(conv3, up4)
+
+        # ----Reverse channel attnetion map---
+        # Apply inversion operation
+        att_weight4_invert = 1.0 - att_weight4
+        # Multipled inverted attention
+        up4_rev = att_weight4_invert * g_conv4_reshaped
+
+        g_conv3, att3 = self.attentionblock3(conv3, up4_rev)
 
         # atten3_map = att3.cpu().detach().numpy().astype(np.float)
         # atten3_map = ndimage.interpolation.zoom(atten3_map, [1.0, 1.0, 224 / atten3_map.shape[2],
